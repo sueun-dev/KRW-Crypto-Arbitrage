@@ -79,8 +79,20 @@ export async function loadArbitrageSymbolUniverse(
 }
 
 async function saveArbitrageSymbolUniverse(universe: ArbitrageSymbolUniverse): Promise<string> {
+  // Never persist an empty/degraded universe over a good cache. An empty map means a
+  // failed or partial loadMarkets(); caching it would make the next load() return null
+  // (line ~53) and force a full refresh on every subsequent call.
+  if (
+    !Object.keys(universe.bithumbKrwSymbols).length ||
+    !Object.keys(universe.gateioSpotSymbols).length ||
+    !Object.keys(universe.gateioPerpSymbols).length
+  ) {
+    throw new Error("refusing to cache an empty arbitrage symbol universe");
+  }
   const filePath = await symbolCachePath();
-  const tmpPath = `${filePath}.tmp`;
+  // Unique tmp name so two concurrent writers (e.g. two CLI runs sharing OEH_RUNTIME_DIR)
+  // never share one `.tmp` and publish a torn/half-written file via interleaved rename.
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   const payload = {
     schema_version: SYMBOL_CACHE_VERSION,
     updated_at_ts: universe.updatedAtTs,
@@ -202,6 +214,10 @@ export async function bybitSpotAndPerpSymbols(
     if (!market || market.active === false) continue;
     if (!market.swap) continue;
     if (market.future) continue;
+    // Mirror the GateIO guards: never let a dated/delivery contract slip in as a "perp"
+    // (it would trade at a basis and break the hedge assumption).
+    if (market.expiry || market.expiryDatetime) continue;
+    if (/-\d{6}/.test(symbol)) continue; // e.g. BTC/USDT:USDT-240329
     if (market.quote !== "USDT") continue;
     const settle = market.settle;
     if (settle && String(settle).toUpperCase() !== "USDT") continue;
@@ -235,6 +251,9 @@ export async function okxSpotAndPerpSymbols(
     if (!market || market.active === false) continue;
     if (!market.swap) continue;
     if (market.future) continue;
+    // Mirror the GateIO guards: never let a dated/delivery contract slip in as a "perp".
+    if (market.expiry || market.expiryDatetime) continue;
+    if (/-\d{6}/.test(symbol)) continue; // e.g. BTC/USDT:USDT-240329
     if (market.quote !== "USDT") continue;
     const settle = market.settle;
     if (settle && String(settle).toUpperCase() !== "USDT") continue;
@@ -460,5 +479,14 @@ export async function getArbitrageSymbolUniverse(
     const cached = await loadArbitrageSymbolUniverse(maxAgeSeconds);
     if (cached) return cached;
   }
-  return refreshArbitrageSymbolUniverse(bithumb, gateSpot, gatePerp);
+  try {
+    return await refreshArbitrageSymbolUniverse(bithumb, gateSpot, gatePerp);
+  } catch (err) {
+    // Refresh failed (network/rate-limit, or empty markets rejected by the save guard).
+    // Fall back to the last known-good cache regardless of age rather than failing the
+    // entire flow over a transient exchange hiccup.
+    const stale = await loadArbitrageSymbolUniverse(0);
+    if (stale) return stale;
+    throw err;
+  }
 }

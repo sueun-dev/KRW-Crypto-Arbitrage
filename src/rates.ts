@@ -97,14 +97,13 @@ export async function usdtKrwRate(source?: string | null): Promise<number> {
   if (resolved === "upbit_usdt") return fetchUpbitUsdtKrw();
   if (resolved === "bithumb_usdt") return fetchBithumbUsdtKrw();
   if (resolved === "fx_plus_usdt_premium") {
-    const fx = await fetchFxUsdKrw();
+    // The effective rate is the domestic KRW-USDT price, which already captures the
+    // Korea USDT premium. FX USD/KRW is only needed for the premium breakdown in
+    // usdtKrwRateContext — fetching it here would add a needless failure mode (the
+    // rate would fail whenever the FX API is down) even though FX does not affect
+    // the returned value.
     const premiumSource = resolvePremiumSource();
-    const domestic = premiumSource === "upbit_usdt" ? await fetchUpbitUsdtKrw() : await fetchBithumbUsdtKrw();
-    // Using domestic KRW-USDT directly captures the Korea USDT premium vs FX USD/KRW.
-    // Still compute the pct vs FX for transparency/debugging.
-    const pct = ((domestic - fx) / fx) * 100.0;
-    if (!Number.isFinite(pct)) return domestic;
-    return domestic;
+    return premiumSource === "upbit_usdt" ? fetchUpbitUsdtKrw() : fetchBithumbUsdtKrw();
   }
   if (resolved === "custom") return fetchCustomRate();
   throw new Error(`Unsupported USDT/KRW rate source: ${resolved}`);

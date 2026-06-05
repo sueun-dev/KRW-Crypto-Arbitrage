@@ -116,6 +116,25 @@ const clientsByPair: Record<DomesticExchange, Record<OverseasExchange, Set<http.
 };
 const autoClients = new Set<http.ServerResponse>();
 
+/**
+ * Writes to one SSE client, dropping it from its set if the socket has gone bad.
+ * A half-closed client's `res.write` can throw synchronously; left unhandled in a
+ * broadcast loop that would abort the whole broadcast (or crash the process).
+ */
+function safeWrite(clients: Set<http.ServerResponse>, res: http.ServerResponse, data: string): void {
+  try {
+    res.write(data);
+  } catch {
+    clients.delete(res);
+  }
+}
+
+/** Registers an SSE client and wires teardown on both close and error. */
+function registerSseClient(clients: Set<http.ServerResponse>, res: http.ServerResponse): void {
+  clients.add(res);
+  res.on("error", () => clients.delete(res));
+}
+
 // ========== DEX Contango Stream (centralized) ==========
 const dexStreamClients = new Set<http.ServerResponse>();
 let centralDexData: Record<string, DexApiResult> = {};
@@ -148,10 +167,12 @@ async function fetchAllDomesticPrices(): Promise<Record<string, { ask: number; b
           };
         }
       }
-      // Get USDT/KRW rate from Bithumb
+      // Get USDT/KRW rate from Bithumb. Guard against non-numeric strings (e.g. "N/A"),
+      // which are truthy but parseFloat to NaN and would poison every displayed price.
       const usdtInfo = data.data["USDT"] as any;
-      if (usdtInfo?.closing_price) {
-        centralUsdtKrw = parseFloat(usdtInfo.closing_price);
+      const usdtKrwParsed = parseFloat(usdtInfo?.closing_price);
+      if (Number.isFinite(usdtKrwParsed) && usdtKrwParsed > 0) {
+        centralUsdtKrw = usdtKrwParsed;
       }
     }
   } catch (err) {
@@ -248,7 +269,7 @@ function broadcastDexStream(customDexPrices: Record<string, Record<string, { bid
   const data = `event: tick\ndata: ${JSON.stringify(payload)}\n\n`;
 
   for (const res of dexStreamClients) {
-    res.write(data);
+    safeWrite(dexStreamClients, res, data);
   }
 }
 
@@ -470,8 +491,9 @@ function parseConfig(body: any): WatchConfig {
 function broadcast(domestic: DomesticExchange, overseas: OverseasExchange, payload: WatchReverseTick): void {
   lastPayloads[domestic][overseas] = payload;
   const data = `event: tick\ndata: ${JSON.stringify(payload)}\n\n`;
-  for (const res of clientsByPair[domestic][overseas]) {
-    res.write(data);
+  const pairClients = clientsByPair[domestic][overseas];
+  for (const res of pairClients) {
+    safeWrite(pairClients, res, data);
   }
 
   if (autoClients.size) {
@@ -480,7 +502,7 @@ function broadcast(domestic: DomesticExchange, overseas: OverseasExchange, paylo
       lastAutoPayload = autoPayload;
       const autoData = `event: tick\ndata: ${JSON.stringify(autoPayload)}\n\n`;
       for (const res of autoClients) {
-        res.write(autoData);
+        safeWrite(autoClients, res, autoData);
       }
     }
   }
@@ -494,8 +516,9 @@ function broadcast(domestic: DomesticExchange, overseas: OverseasExchange, paylo
 function broadcastStatus(domestic: DomesticExchange, overseas: OverseasExchange, status: WatchStatus): void {
   lastStatuses[domestic][overseas] = status;
   const data = `event: status\ndata: ${JSON.stringify(status)}\n\n`;
-  for (const res of clientsByPair[domestic][overseas]) {
-    res.write(data);
+  const pairClients = clientsByPair[domestic][overseas];
+  for (const res of pairClients) {
+    safeWrite(pairClients, res, data);
   }
 }
 
@@ -663,7 +686,7 @@ const server = http.createServer(async (req, res) => {
     const lastStatus = lastStatuses[domestic][overseas];
     if (lastPayload) res.write(`event: tick\ndata: ${JSON.stringify(lastPayload)}\n\n`);
     if (lastStatus) res.write(`event: status\ndata: ${JSON.stringify(lastStatus)}\n\n`);
-    clientsByPair[domestic][overseas].add(res);
+    registerSseClient(clientsByPair[domestic][overseas], res);
     req.on("close", () => {
       clientsByPair[domestic][overseas].delete(res);
     });
@@ -689,7 +712,7 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (lastAutoPayload) res.write(`event: tick\ndata: ${JSON.stringify(lastAutoPayload)}\n\n`);
-    autoClients.add(res);
+    registerSseClient(autoClients, res);
     req.on("close", () => {
       autoClients.delete(res);
     });
@@ -709,7 +732,7 @@ const server = http.createServer(async (req, res) => {
       res.write(`event: tick\ndata: ${JSON.stringify(lastDexStreamPayload)}\n\n`);
     }
     const isFirstClient = dexStreamClients.size === 0;
-    dexStreamClients.add(res);
+    registerSseClient(dexStreamClients, res);
     req.on("close", () => {
       dexStreamClients.delete(res);
     });
@@ -800,14 +823,15 @@ const server = http.createServer(async (req, res) => {
 });
 
 setInterval(() => {
+  const ping = `: ping ${Date.now()}\n\n`;
   for (const domesticGroup of Object.values(clientsByPair)) {
     for (const group of Object.values(domesticGroup)) {
-      for (const res of group) res.write(`: ping ${Date.now()}\n\n`);
+      for (const res of group) safeWrite(group, res, ping);
     }
   }
   // Ping DEX stream clients
   for (const res of dexStreamClients) {
-    res.write(`: ping ${Date.now()}\n\n`);
+    safeWrite(dexStreamClients, res, ping);
   }
 }, 15000);
 

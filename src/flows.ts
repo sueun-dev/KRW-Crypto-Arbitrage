@@ -60,7 +60,7 @@ import {
   okxCurrencyStatuses,
   upbitInoutStatuses,
 } from "./transfers";
-import { bithumbMarketBuyBase, bithumbMarketSellBase, gateioPerpCover, gateioPerpShort, gateioSpotBuy, gateioSpotSell } from "./trading";
+import { bithumbMarketBuyBase, bithumbMarketSellBase, gateioPerpCover, gateioPerpShort, gateioSpotBuy, gateioSpotSell, runHedgeSecondLeg } from "./trading";
 import {
   BithumbOrderbookWs,
   BybitPerpOrderbookWs,
@@ -2293,7 +2293,10 @@ export async function runReverseCycle(
     }
 
     const perpFilled = await gateioPerpShort(gatePerp, gatePerpSymbol, baseQty, coin);
-    const spotFilled = await bithumbMarketBuyBase(bithumb, bithumbSymbol, perpFilled, coin);
+    const spotFilled = await runHedgeSecondLeg(
+      () => bithumbMarketBuyBase(bithumb, bithumbSymbol, perpFilled, coin),
+      `GateIO ${coin} 퍼프 숏 ${perpFilled.toFixed(8)} (Bithumb 매수 미체결)`,
+    );
     const diff = spotFilled - perpFilled;
     if (Math.abs(diff) > 1e-8) console.warn(`수량 불일치: bithumb=${spotFilled}, gateio_perp=${perpFilled} (diff=${diff})`);
   }
@@ -2305,7 +2308,15 @@ export async function runReverseCycle(
   if (!(await confirmTransfer(coin, "bithumb_to_gateio"))) return;
 
   const gateBal = await gateioSpotBalance(gateSpot, coin);
-  const qty = Math.min(shortQty, gateBal || shortQty);
+  // Clamp the unwind size to the coins actually credited on GateIO spot. A 0/low
+  // balance means the transfer has not landed yet — never fall back to shortQty,
+  // or the spot-sell leg would size against coins we don't hold and break the hedge.
+  const qty = Math.min(shortQty, gateBal);
+  if (!(qty > 0)) {
+    throw new Error(
+      `GateIO ${coin} 스팟 잔고가 0 입니다 (전송 미도착?). 청산 중단: short=${shortQty.toFixed(8)}, gate_spot_balance=${gateBal.toFixed(8)}`,
+    );
+  }
   console.info(`\n[6] 청산 수량: ${qty.toFixed(8)} ${coin} (short=${shortQty.toFixed(8)}, gate_spot_balance=${gateBal.toFixed(8)})`);
 
   const perpRaw = await fetchVwapQuote(gatePerp, gatePerpSymbol, qty, orderbookDepth);
@@ -2440,8 +2451,11 @@ export async function runKimchiCycle(
       continue;
     }
 
-    const spotFilled = await gateioSpotBuy(gateSpot, gateSpotSymbol, baseQty, coin);
-    await gateioPerpShort(gatePerp, gatePerpSymbol, spotFilled, coin);
+    const spotFilled = await gateioSpotBuy(gateSpot, gateSpotSymbol, baseQty, coin, gateSpotRaw.ask);
+    await runHedgeSecondLeg(
+      () => gateioPerpShort(gatePerp, gatePerpSymbol, spotFilled, coin),
+      `GateIO ${coin} 스팟 롱 ${spotFilled.toFixed(8)} (퍼프 숏 미체결)`,
+    );
   }
 
   console.info(`\n[10] 이제 ${coin} 를 GateIO -> Bithumb 로 직접 전송하세요.`);
