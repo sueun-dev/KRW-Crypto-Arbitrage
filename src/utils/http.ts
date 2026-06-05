@@ -16,21 +16,18 @@ export interface FetchOptions extends RequestInit {
 }
 
 /**
- * Fetches JSON data from a URL with timeout support.
+ * Performs a timed fetch, validates the status, and maps the body via `parse`.
  *
- * @template T - The expected response type
- * @param url - The URL to fetch from
- * @param init - Optional fetch options including timeout
- * @returns Promise resolving to the parsed JSON response
- * @throws {HttpError} When the request fails or returns non-2xx status
- *
- * @example
- * ```typescript
- * interface User { id: number; name: string; }
- * const user = await fetchJson<User>('https://api.example.com/user/1');
- * ```
+ * Centralizes the abort-on-timeout wiring and the {@link HttpError} translation
+ * shared by {@link fetchJson} and {@link fetchText} so both behave identically:
+ * a non-2xx response throws with the status text, an aborted request throws a
+ * 408 timeout, and anything else becomes a status-0 "Network error".
  */
-export async function fetchJson<T>(url: string, init?: FetchOptions): Promise<T> {
+async function fetchWithTimeout<T>(
+  url: string,
+  parse: (resp: Response) => Promise<T>,
+  init?: FetchOptions,
+): Promise<T> {
   const controller = new AbortController();
   const timeoutMs = init?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -42,7 +39,7 @@ export async function fetchJson<T>(url: string, init?: FetchOptions): Promise<T>
       throw new HttpError(url, resp.status, resp.statusText);
     }
 
-    return (await resp.json()) as T;
+    return await parse(resp);
   } catch (error) {
     if (error instanceof HttpError) {
       throw error;
@@ -59,6 +56,25 @@ export async function fetchJson<T>(url: string, init?: FetchOptions): Promise<T>
 }
 
 /**
+ * Fetches JSON data from a URL with timeout support.
+ *
+ * @template T - The expected response type
+ * @param url - The URL to fetch from
+ * @param init - Optional fetch options including timeout
+ * @returns Promise resolving to the parsed JSON response
+ * @throws {HttpError} When the request fails or returns non-2xx status
+ *
+ * @example
+ * ```typescript
+ * interface User { id: number; name: string; }
+ * const user = await fetchJson<User>('https://api.example.com/user/1');
+ * ```
+ */
+export async function fetchJson<T>(url: string, init?: FetchOptions): Promise<T> {
+  return fetchWithTimeout(url, (resp) => resp.json() as Promise<T>, init);
+}
+
+/**
  * Fetches text content from a URL with timeout support.
  *
  * @param url - The URL to fetch from
@@ -67,29 +83,5 @@ export async function fetchJson<T>(url: string, init?: FetchOptions): Promise<T>
  * @throws {HttpError} When the request fails or returns non-2xx status
  */
 export async function fetchText(url: string, init?: FetchOptions): Promise<string> {
-  const controller = new AbortController();
-  const timeoutMs = init?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const resp = await fetch(url, { ...init, signal: controller.signal });
-
-    if (!resp.ok) {
-      throw new HttpError(url, resp.status, resp.statusText);
-    }
-
-    return await resp.text();
-  } catch (error) {
-    if (error instanceof HttpError) {
-      throw error;
-    }
-
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new HttpError(url, 408, `Request timeout after ${timeoutMs}ms`, error);
-    }
-
-    throw new HttpError(url, 0, "Network error", error);
-  } finally {
-    clearTimeout(timeout);
-  }
+  return fetchWithTimeout(url, (resp) => resp.text(), init);
 }

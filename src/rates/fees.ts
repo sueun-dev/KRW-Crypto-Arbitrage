@@ -3,22 +3,8 @@
  * Fee rates are expressed as decimals (e.g., 0.001 = 0.1%).
  */
 
-// Re-export fee constants from core
-export {
-  BITHUMB_SPOT_TAKER_FEE,
-  UPBIT_SPOT_TAKER_FEE,
-  GATEIO_SPOT_TAKER_FEE,
-  GATEIO_PERP_TAKER_FEE,
-  OKX_SPOT_TAKER_FEE,
-  OKX_PERP_TAKER_FEE,
-  BYBIT_SPOT_TAKER_FEE,
-  BYBIT_PERP_TAKER_FEE,
-  HYPERLIQUID_SPOT_TAKER_FEE,
-  HYPERLIQUID_PERP_TAKER_FEE,
-  LIGHTER_SPOT_TAKER_FEE,
-  LIGHTER_PERP_TAKER_FEE,
-} from "../core/constants";
-
+// Import the fee constants for the lookup table below, and re-export them so that
+// `rates/fees` (and the `./fees` compat shim) remain the public fee surface.
 import {
   BITHUMB_SPOT_TAKER_FEE,
   UPBIT_SPOT_TAKER_FEE,
@@ -33,6 +19,21 @@ import {
   LIGHTER_SPOT_TAKER_FEE,
   LIGHTER_PERP_TAKER_FEE,
 } from "../core/constants";
+
+export {
+  BITHUMB_SPOT_TAKER_FEE,
+  UPBIT_SPOT_TAKER_FEE,
+  GATEIO_SPOT_TAKER_FEE,
+  GATEIO_PERP_TAKER_FEE,
+  OKX_SPOT_TAKER_FEE,
+  OKX_PERP_TAKER_FEE,
+  BYBIT_SPOT_TAKER_FEE,
+  BYBIT_PERP_TAKER_FEE,
+  HYPERLIQUID_SPOT_TAKER_FEE,
+  HYPERLIQUID_PERP_TAKER_FEE,
+  LIGHTER_SPOT_TAKER_FEE,
+  LIGHTER_PERP_TAKER_FEE,
+};
 
 /** Market type for fee lookup */
 export type MarketType = "spot" | "perp";

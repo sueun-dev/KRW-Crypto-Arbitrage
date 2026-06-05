@@ -52,23 +52,62 @@ function extractFilledAndCost(order: any): { filled: number; cost: number } {
   return { filled: Number.isFinite(filled) ? filled : 0, cost: Number.isFinite(cost) ? cost : 0 };
 }
 
+/**
+ * Places a market order, polls until it fills, and returns the filled base amount.
+ *
+ * Shared by every market-order leg below; the only per-leg differences are the
+ * order side, an optional reference price (GateIO spot buys are quote-denominated),
+ * and the log/error wording — all passed in via {@link options}. Behaviour is
+ * identical to the previous per-function implementations: same precision handling,
+ * same `pollFetchOrder` poll, same "produced 0 fill" guard, and the same log lines.
+ *
+ * @param options.logFill - builds the success log line from `{ filled, cost }`
+ * @param options.zeroFillError - message thrown when nothing fills
+ * @param options.refPrice - quote price for ccxt; required (> 0) when provided
+ * @param options.afterQtyCheck - extra validation run after the qty guard
+ */
+async function placeMarketOrder(
+  exchange: Exchange,
+  symbol: string,
+  side: "buy" | "sell",
+  baseAmount: number,
+  options: {
+    logFill: (info: { filled: number; cost: number; coin: string }) => string;
+    zeroFillError: string;
+    coin: string;
+    refPrice?: number;
+    afterQtyCheck?: () => void;
+  },
+): Promise<number> {
+  const qty = Number((exchange as any).amountToPrecision?.(symbol, baseAmount) ?? baseAmount);
+  if (!(qty > 0)) throw new Error("baseAmount must be > 0");
+  options.afterQtyCheck?.();
+
+  const order =
+    options.refPrice !== undefined
+      ? await exchange.createOrder(symbol, "market", side, qty, options.refPrice)
+      : await exchange.createOrder(symbol, "market", side, qty);
+  const orderId = String((order as any)?.id ?? "");
+  const finalOrder = orderId ? await pollFetchOrder(exchange, orderId, symbol) : order;
+  const { filled, cost } = extractFilledAndCost(finalOrder);
+
+  console.info(options.logFill({ filled, cost, coin: options.coin }));
+  if (!(filled > 0)) throw new Error(options.zeroFillError);
+  return filled;
+}
+
 export async function bithumbMarketBuyBase(
   bithumb: Exchange,
   symbol: string,
   baseAmount: number,
   coin: string,
 ): Promise<number> {
-  const qty = Number((bithumb as any).amountToPrecision?.(symbol, baseAmount) ?? baseAmount);
-  if (!(qty > 0)) throw new Error("baseAmount must be > 0");
-
-  const order = await bithumb.createOrder(symbol, "market", "buy", qty);
-  const orderId = String((order as any)?.id ?? "");
-  const finalOrder = orderId ? await pollFetchOrder(bithumb, orderId, symbol) : order;
-  const { filled, cost } = extractFilledAndCost(finalOrder);
-
-  console.info(`✅ BITHUMB Spot Buy: ${filled.toFixed(8)} ${coin} (cost≈₩${Math.round(cost).toLocaleString()})`);
-  if (!(filled > 0)) throw new Error("Bithumb market buy produced 0 fill");
-  return filled;
+  return placeMarketOrder(bithumb, symbol, "buy", baseAmount, {
+    coin,
+    logFill: ({ filled, cost }) =>
+      `✅ BITHUMB Spot Buy: ${filled.toFixed(8)} ${coin} (cost≈₩${Math.round(cost).toLocaleString()})`,
+    zeroFillError: "Bithumb market buy produced 0 fill",
+  });
 }
 
 export async function bithumbMarketSellBase(
@@ -77,17 +116,12 @@ export async function bithumbMarketSellBase(
   baseAmount: number,
   coin: string,
 ): Promise<number> {
-  const qty = Number((bithumb as any).amountToPrecision?.(symbol, baseAmount) ?? baseAmount);
-  if (!(qty > 0)) throw new Error("baseAmount must be > 0");
-
-  const order = await bithumb.createOrder(symbol, "market", "sell", qty);
-  const orderId = String((order as any)?.id ?? "");
-  const finalOrder = orderId ? await pollFetchOrder(bithumb, orderId, symbol) : order;
-  const { filled, cost } = extractFilledAndCost(finalOrder);
-
-  console.info(`✅ BITHUMB Spot Sell: ${filled.toFixed(8)} ${coin} (proceeds≈₩${Math.round(cost).toLocaleString()})`);
-  if (!(filled > 0)) throw new Error("Bithumb market sell produced 0 fill");
-  return filled;
+  return placeMarketOrder(bithumb, symbol, "sell", baseAmount, {
+    coin,
+    logFill: ({ filled, cost }) =>
+      `✅ BITHUMB Spot Sell: ${filled.toFixed(8)} ${coin} (proceeds≈₩${Math.round(cost).toLocaleString()})`,
+    zeroFillError: "Bithumb market sell produced 0 fill",
+  });
 }
 
 export async function gateioPerpShort(
@@ -96,15 +130,11 @@ export async function gateioPerpShort(
   baseAmount: number,
   coin: string,
 ): Promise<number> {
-  const qty = Number((gatePerp as any).amountToPrecision?.(symbol, baseAmount) ?? baseAmount);
-  if (!(qty > 0)) throw new Error("baseAmount must be > 0");
-  const order = await gatePerp.createOrder(symbol, "market", "sell", qty);
-  const orderId = String((order as any)?.id ?? "");
-  const finalOrder = orderId ? await pollFetchOrder(gatePerp, orderId, symbol) : order;
-  const { filled } = extractFilledAndCost(finalOrder);
-  console.info(`✅ GATEIO Perp Short: ${filled.toFixed(8)} ${coin}`);
-  if (!(filled > 0)) throw new Error("GateIO perp short produced 0 fill");
-  return filled;
+  return placeMarketOrder(gatePerp, symbol, "sell", baseAmount, {
+    coin,
+    logFill: ({ filled }) => `✅ GATEIO Perp Short: ${filled.toFixed(8)} ${coin}`,
+    zeroFillError: "GateIO perp short produced 0 fill",
+  });
 }
 
 export async function gateioPerpCover(
@@ -113,15 +143,11 @@ export async function gateioPerpCover(
   baseAmount: number,
   coin: string,
 ): Promise<number> {
-  const qty = Number((gatePerp as any).amountToPrecision?.(symbol, baseAmount) ?? baseAmount);
-  if (!(qty > 0)) throw new Error("baseAmount must be > 0");
-  const order = await gatePerp.createOrder(symbol, "market", "buy", qty);
-  const orderId = String((order as any)?.id ?? "");
-  const finalOrder = orderId ? await pollFetchOrder(gatePerp, orderId, symbol) : order;
-  const { filled } = extractFilledAndCost(finalOrder);
-  console.info(`✅ GATEIO Perp Cover: ${filled.toFixed(8)} ${coin}`);
-  if (!(filled > 0)) throw new Error("GateIO perp cover produced 0 fill");
-  return filled;
+  return placeMarketOrder(gatePerp, symbol, "buy", baseAmount, {
+    coin,
+    logFill: ({ filled }) => `✅ GATEIO Perp Cover: ${filled.toFixed(8)} ${coin}`,
+    zeroFillError: "GateIO perp cover produced 0 fill",
+  });
 }
 
 export async function gateioSpotBuy(
@@ -131,19 +157,19 @@ export async function gateioSpotBuy(
   coin: string,
   refPrice: number,
 ): Promise<number> {
-  const qty = Number((gateSpot as any).amountToPrecision?.(symbol, baseAmount) ?? baseAmount);
-  if (!(qty > 0)) throw new Error("baseAmount must be > 0");
-  if (!(refPrice > 0)) throw new Error("refPrice must be > 0 for a GateIO spot market buy");
   // GateIO spot market BUY is quote-denominated: ccxt needs a price (or explicit cost)
   // and spends amount × price as the quote total (createMarketBuyOrderRequiresPrice
   // defaults to true). Without it ccxt throws InvalidOrder before sending the order.
-  const order = await gateSpot.createOrder(symbol, "market", "buy", qty, refPrice);
-  const orderId = String((order as any)?.id ?? "");
-  const finalOrder = orderId ? await pollFetchOrder(gateSpot, orderId, symbol) : order;
-  const { filled } = extractFilledAndCost(finalOrder);
-  console.info(`✅ GATEIO Spot Buy: ${filled.toFixed(8)} ${coin}`);
-  if (!(filled > 0)) throw new Error("GateIO spot buy produced 0 fill");
-  return filled;
+  // The refPrice guard runs after the qty guard to preserve the original error order.
+  return placeMarketOrder(gateSpot, symbol, "buy", baseAmount, {
+    coin,
+    refPrice,
+    afterQtyCheck: () => {
+      if (!(refPrice > 0)) throw new Error("refPrice must be > 0 for a GateIO spot market buy");
+    },
+    logFill: ({ filled }) => `✅ GATEIO Spot Buy: ${filled.toFixed(8)} ${coin}`,
+    zeroFillError: "GateIO spot buy produced 0 fill",
+  });
 }
 
 export async function gateioSpotSell(
@@ -152,13 +178,9 @@ export async function gateioSpotSell(
   baseAmount: number,
   coin: string,
 ): Promise<number> {
-  const qty = Number((gateSpot as any).amountToPrecision?.(symbol, baseAmount) ?? baseAmount);
-  if (!(qty > 0)) throw new Error("baseAmount must be > 0");
-  const order = await gateSpot.createOrder(symbol, "market", "sell", qty);
-  const orderId = String((order as any)?.id ?? "");
-  const finalOrder = orderId ? await pollFetchOrder(gateSpot, orderId, symbol) : order;
-  const { filled } = extractFilledAndCost(finalOrder);
-  console.info(`✅ GATEIO Spot Sell: ${filled.toFixed(8)} ${coin}`);
-  if (!(filled > 0)) throw new Error("GateIO spot sell produced 0 fill");
-  return filled;
+  return placeMarketOrder(gateSpot, symbol, "sell", baseAmount, {
+    coin,
+    logFill: ({ filled }) => `✅ GATEIO Spot Sell: ${filled.toFixed(8)} ${coin}`,
+    zeroFillError: "GateIO spot sell produced 0 fill",
+  });
 }
