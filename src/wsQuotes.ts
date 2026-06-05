@@ -215,6 +215,50 @@ class QuoteCache {
   }
 }
 
+/** Local depth book maintained from Bithumb legacy `orderbookdepth` deltas. */
+export type DepthBook = {
+  bids: Map<number, number>;
+  asks: Map<number, number>;
+};
+
+/** Creates an empty {@link DepthBook}. */
+export function createDepthBook(): DepthBook {
+  return { bids: new Map<number, number>(), asks: new Map<number, number>() };
+}
+
+/**
+ * Applies Bithumb legacy `orderbookdepth` delta entries for a single symbol to a
+ * persistent local book.
+ *
+ * The legacy `wss://pubwss.bithumb.com` channel streams only the *changed* levels,
+ * so the book must be accumulated across messages rather than rebuilt from each
+ * message. A quantity of 0 means the level was removed.
+ */
+export function applyBithumbDepthEntries(
+  book: DepthBook,
+  entries: ReadonlyArray<{ orderType?: unknown; price?: unknown; quantity?: unknown }>,
+): void {
+  for (const entry of entries) {
+    const price = Number(entry?.price ?? NaN);
+    const qty = Number(entry?.quantity ?? NaN);
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(qty) || qty < 0) continue;
+    const side = entry?.orderType === "bid" ? book.bids : entry?.orderType === "ask" ? book.asks : null;
+    if (!side) continue;
+    if (qty > 0) side.set(price, qty);
+    else side.delete(price);
+  }
+}
+
+/** Returns the best bid/ask from a {@link DepthBook}, or null if either side is empty. */
+export function bestBidAskFromBook(book: DepthBook): MarketQuote | null {
+  let bid = 0;
+  for (const price of book.bids.keys()) if (price > bid) bid = price;
+  let ask = 0;
+  for (const price of book.asks.keys()) if (ask === 0 || price < ask) ask = price;
+  if (bid > 0 && ask > 0) return { bid, ask };
+  return null;
+}
+
 export class BithumbOrderbookWs extends QuoteCache {
   private sockets: ReconnectingWebSocket[] = [];
   private symbols: string[];
@@ -266,36 +310,31 @@ export class BithumbOrderbookWs extends QuoteCache {
     const list = Array.isArray(message?.content?.list) ? message.content.list : [];
     if (!list.length) return;
 
-    const grouped = new Map<string, { bids: Map<number, number>; asks: Map<number, number> }>();
+    // Legacy `orderbookdepth` is a delta feed: each message carries only the changed
+    // levels (quantity 0 = removed). Accumulate into the persistent per-symbol book
+    // instead of rebuilding from a single message, otherwise best bid/ask would be
+    // computed from just the latest delta rather than the full book.
+    const touched = new Set<string>();
     for (const entry of list) {
       const symbol = typeof entry?.symbol === "string" ? entry.symbol : "";
       if (!symbol) continue;
-      const price = Number(entry?.price ?? 0);
-      const qty = Number(entry?.quantity ?? 0);
-      if (!Number.isFinite(price) || price <= 0) continue;
-      let book = grouped.get(symbol);
+      let book = this.books.get(symbol);
       if (!book) {
-        book = { bids: new Map<number, number>(), asks: new Map<number, number>() };
-        grouped.set(symbol, book);
+        book = createDepthBook();
+        this.books.set(symbol, book);
       }
-      if (entry?.orderType === "bid") {
-        if (qty > 0) book.bids.set(price, qty);
-      } else if (entry?.orderType === "ask") {
-        if (qty > 0) book.asks.set(price, qty);
-      }
+      applyBithumbDepthEntries(book, [entry]);
+      touched.add(symbol);
     }
 
-    for (const [wsSymbol, book] of grouped) {
-      this.books.set(wsSymbol, book);
-      let bid = 0;
-      for (const price of book.bids.keys()) bid = Math.max(bid, price);
-      let ask = 0;
-      for (const price of book.asks.keys()) ask = ask > 0 ? Math.min(ask, price) : price;
-      if (bid > 0 && ask > 0) {
-        // Convert back to slash format: FLOW_KRW -> FLOW/KRW
-        const originalSymbol = this.symbolMap.get(wsSymbol) ?? wsSymbol;
-        this.setQuote(originalSymbol, { bid, ask });
-      }
+    for (const wsSymbol of touched) {
+      const book = this.books.get(wsSymbol);
+      if (!book) continue;
+      const best = bestBidAskFromBook(book);
+      if (!best) continue;
+      // Convert back to slash format: FLOW_KRW -> FLOW/KRW
+      const originalSymbol = this.symbolMap.get(wsSymbol) ?? wsSymbol;
+      this.setQuote(originalSymbol, best);
     }
   }
 }

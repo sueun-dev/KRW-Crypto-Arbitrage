@@ -66,7 +66,10 @@ export async function gateioPerpShortQty(
     };
 
     const symbol = String(position.symbol ?? "").toUpperCase();
-    if (!symbol.includes(coinUpper)) continue;
+    // Match the exact base coin, not a substring — otherwise "BTC" would also match
+    // "WBTC/USDT:USDT" / "BTCDOM/..." and return an unrelated position's size.
+    const base = symbol.split(/[/:-]/)[0];
+    if (base !== coinUpper) continue;
 
     const contracts = position.contracts;
     const size = position.size;
@@ -84,6 +87,14 @@ export async function gateioPerpShortQty(
 
     // Only return short positions
     if (side && side !== "short") continue;
+
+    // The cover leg passes this to ccxt gate createOrder, which interprets amount as
+    // an integer contract count — so the pipeline assumes 1 base unit per contract.
+    if (Math.abs(contractSize - 1) > 1e-9) {
+      throw new Error(
+        `gateioPerpShortQty: ${coin} contractSize=${contractSize} (≠1) — aborting to avoid mis-sizing the cover order.`,
+      );
+    }
     return qty;
   }
 

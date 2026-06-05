@@ -40,8 +40,11 @@ export function buildTransferEtaEntries(
   const entries: TransferEtaEntry[] = [];
   for (const [bChain, gChain] of chainPairs) {
     const canonical = normalizeChainName(bChain);
+    // Confirmations are a property of the *receiving* exchange's deposit policy
+    // (how many block confirmations it requires before crediting the deposit),
+    // so read from the destination side — matching `receiveLabel` below.
     const confirmations =
-      direction === "bithumb_to_gateio" ? bestConfirmations(bithumbStatus, canonical) : bestConfirmations(gateioStatus, canonical);
+      direction === "bithumb_to_gateio" ? bestConfirmations(gateioStatus, canonical) : bestConfirmations(bithumbStatus, canonical);
     const minutes = CHAIN_MINUTES[canonical] ?? null;
     const receiveLabel = direction === "bithumb_to_gateio" ? "GateIO" : "Bithumb";
     entries.push({
