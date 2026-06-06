@@ -31,12 +31,16 @@ Real-time cryptocurrency arbitrage monitor and execution console for KRW exchang
 ### DEX Perpetuals
 - Hyperliquid
 - Drift
+- Jupiter
+- EdgeX
 - GRVT
 - Reya
+- Nado
+- Ostium
 - Extended
 - Pacifica
-- Ostium
-- Nado
+- Varational
+- Vertex (migrated to Ink L2; integration kept as a placeholder and currently returns no markets)
 
 ## How It Works
 
@@ -138,12 +142,16 @@ npm run build
 ### DEX 무기한 선물
 - Hyperliquid
 - Drift
+- Jupiter
+- EdgeX
 - GRVT
 - Reya
+- Nado
+- Ostium
 - Extended
 - Pacifica
-- Ostium
-- Nado
+- Varational
+- Vertex (Ink L2로 이전됨; 통합 코드는 placeholder로 유지되며 현재는 마켓을 반환하지 않음)
 
 ## 작동 방식
 
